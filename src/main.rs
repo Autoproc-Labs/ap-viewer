@@ -21,16 +21,6 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let live_views = resp["live_views"].as_object()
         .expect("live_views should be an object");
 
-    let mut ws_streams: HashMap<String, WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>> = HashMap::new();
-
-    // Connect to all WebSockets
-    for (key, value) in live_views {
-        // if value
-        let ws_url = value.as_str().unwrap();
-        let (ws_stream, _) = connect_async(ws_url).await?;
-        ws_streams.insert(key.clone(), ws_stream);
-    }
-
     // Create a window for displaying images
     let mut window = Window::new(
         "WebSocket Image Viewer",
@@ -40,24 +30,49 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     )?;
 
     let mut current_stream_key = live_views.keys().next().unwrap().to_string();
+    let mut current_ws_stream: Option<WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>> = None;
+
+    // Connect to the initial stream
+    if let Some(ws_url) = live_views[&current_stream_key].as_str() {
+        let (ws_stream, _) = connect_async(ws_url).await?;
+        current_ws_stream = Some(ws_stream);
+    }
 
     loop {
         // Check for key presses
         let keys = window.get_keys_pressed(minifb::KeyRepeat::No);
         for key in keys {
-            match key {
-                Key::Key1 => current_stream_key = live_views.keys().nth(0).unwrap().to_string(),
-                Key::Key2 => current_stream_key = live_views.keys().nth(1).unwrap().to_string(),
-                Key::Key3 => current_stream_key = live_views.keys().nth(2).unwrap().to_string(),
-                Key::Key4 => current_stream_key = live_views.keys().nth(3).unwrap().to_string(),
-                Key::Key5 => current_stream_key = live_views.keys().nth(4).unwrap().to_string(),
+            let new_key = match key {
+                Key::Key1 => live_views.keys().nth(0),
+                Key::Key2 => live_views.keys().nth(1),
+                Key::Key3 => live_views.keys().nth(2),
+                Key::Key4 => live_views.keys().nth(3),
+                Key::Key5 => live_views.keys().nth(4),
                 Key::Escape => return Ok(()),
-                _ => {}
+                _ => None,
+            };
+
+            if let Some(new_key) = new_key {
+                if new_key != &current_stream_key {
+                    // Disconnect from the current stream
+                    if let Some(mut stream) = current_ws_stream.take() {
+                        tokio::spawn(async move {
+                            let _ = stream.close(None).await;
+                        });
+                    }
+
+                    // Connect to the new stream
+                    current_stream_key = new_key.to_string();
+                    if let Some(ws_url) = live_views[&current_stream_key].as_str() {
+                        let (ws_stream, _) = connect_async(ws_url).await?;
+                        current_ws_stream = Some(ws_stream);
+                    }
+                }
             }
         }
 
         // Read from the current WebSocket
-        if let Some(ws_stream) = ws_streams.get_mut(&current_stream_key) {
+        if let Some(ws_stream) = &mut current_ws_stream {
             if let Some(message) = ws_stream.next().await {
                 let message = message?;
                 if message.is_binary() {
